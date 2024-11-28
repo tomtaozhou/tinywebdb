@@ -1,150 +1,156 @@
-<h1>TinyWebDB API and sniffing log compare</h1>
-<h2> <a href=index.php>HOME</a>  <a href=tags.php>TAGS</a></h2>
-<form method="POST" action="">
 <?php
 setlocale(LC_TIME, "ja_JP");
 date_default_timezone_set('Asia/Tokyo');
-$listLog = array();
+
+// WordPress API 配置
+define('WP_API_URL', 'https://example.com/wp-json/wp/v2/posts');
+define('WP_USERNAME', 'example_user');
+define('WP_PASSWORD', 'example_password');
+
+// 本地状态文件，用于记录最后同步的标签数据
+define('SYNC_STATE_FILE', 'sync_state.json');
+
+// 发送数据到 WordPress 函数
+function send_to_wordpress($title, $content) {
+    $url = WP_API_URL;
+
+    $auth = base64_encode(WP_USERNAME . ':' . WP_PASSWORD);
+
+    $data = array(
+        'title'   => $title,
+        'content' => $content,
+        'status'  => 'publish', // 发布文章状态
+    );
+
+    $options = array(
+        'http' => array(
+            'header'  => "Content-Type: application/json\r\n" .
+                         "Authorization: Basic $auth\r\n",
+            'method'  => 'POST',
+            'content' => json_encode($data),
+        ),
+    );
+
+    $context = stream_context_create($options);
+    $result = file_get_contents($url, false, $context);
+    if ($result === FALSE) {
+        die('Error posting to WordPress');
+    }
+
+    return $result;
+}
+
+// 加载上次同步状态
+function load_sync_state() {
+    if (file_exists(SYNC_STATE_FILE)) {
+        return json_decode(file_get_contents(SYNC_STATE_FILE), true);
+    }
+    return array();
+}
+
+// 保存同步状态
+function save_sync_state($state) {
+    file_put_contents(SYNC_STATE_FILE, json_encode($state));
+}
+
+// 检查数据是否变化
+function has_changed($tagName, $currentData, $syncState) {
+    if (!isset($syncState[$tagName])) {
+        return true; // 如果标签未同步过，认为有变化
+    }
+    return $syncState[$tagName] !== $currentData; // 比较当前数据和已同步数据
+}
+
+// 遍历文件，生成表格内容并检测变化
 $listTxt = array();
 if ($handler = opendir("./")) {
     while (($sub = readdir($handler)) !== FALSE) {
         if (substr($sub, -4, 4) == ".txt") {
             $listTxt[] = $sub;
-        } elseif (substr($sub, 0, 10) == "tinywebdb_") {
-            $listLog[] = $sub;
         }
     }
     closedir($handler);
 }
 
-echo "<h3>TinyWebDB Tags</h3>";
-echo "<table border=1>";
-echo "<thead><tr>";
-echo "<th> </th>";
-echo "<th> Tag Name </th>";
-echo "<th> Size </th>";
-echo "<th> Ver </th>";
-echo "<th> localIP </th>";
-echo "<th> Temp </th>";
-echo "<th> Pres </th>";
-echo "<th> Bright </th>";
-echo "<th> Clients </th>";
-echo "<th> Aps </th>";
-echo "<th> localTime </th>";
-echo "</tr></thead>\n";
+// 加载同步状态
+$syncState = load_sync_state();
+$content = "<h3>TinyWebDB Tags</h3>";
+$content .= "<table border=1>";
+$content .= "<thead><tr>";
+$content .= "<th>Tag Name</th><th>Size</th><th>Ver</th><th>localIP</th>";
+$content .= "<th>Temp</th><th>Pres</th><th>Bright</th><th>Clients</th><th>Aps</th><th>localTime</th>";
+$content .= "</tr></thead>";
+
 if ($listTxt) {
-    $now = time();
     sort($listTxt);
     foreach ($listTxt as $sub) {
-	$tagValue = file_get_contents($sub);
-	$obj = json_decode($tagValue);
-	$tim_stmp = $obj->{'localTime'} - 9*3600;
-	if(($now-$tim_stmp) > 7*24*3600){
-	    echo "<tr bgcolor=#AAAAAA>";
-	} else if(($now-$tim_stmp) > 24*3600){
-	    echo "<tr bgcolor=#FFFFAA>";
-	} else if(($now-$tim_stmp) > 900){
-            echo "<tr bgcolor=#FFAAAA>";
-	} else {
-	    echo "<tr>";
-	}
+        $tagName = substr($sub, 0, -4);
+        $tagValue = file_get_contents($sub);
+        $obj = json_decode($tagValue);
 
-        echo "<td> <input type=checkbox name='tagList[]' value=" . substr($sub, 0, -4) . "></td>\n";
-        echo "<td><a href=tags.php?tag=" . substr($sub, 0, -4) . ">" .substr($sub, 0, -4) . "</a></td>\n";
-        echo "<td>" . filesize("./" . $sub) . "</td>\n";
-        echo "<td>" . $obj->{'Ver'} . "</td>\n";
-        echo "<td>" . $obj->{'localIP'} . "</td>\n";
-        echo "<td>" . $obj->{'temperature'} . "</td>\n";
-        echo "<td>" . $obj->{'pressure_hpa'} . "</td>\n";
-        echo "<td>" . $obj->{'bright_lux'} . "</td>\n";
-        echo "<td>" . $obj->{'clients'} . "</td>\n";
-        echo "<td>" . $obj->{'aps'} . "</td>\n";
-        echo "<td>" . strftime("%D %T", (int)$tim_stmp) . "</td>\n";
-        echo "</tr>";
+        $currentData = array(
+            'Size'      => filesize("./" . $sub),
+            'Ver'       => $obj->{'Ver'},
+            'localIP'   => $obj->{'localIP'},
+            'Temp'      => $obj->{'temperature'},
+            'Pres'      => $obj->{'pressure_hpa'},
+            'Bright'    => $obj->{'bright_lux'},
+            'Clients'   => $obj->{'clients'},
+            'Aps'       => $obj->{'aps'},
+            'localTime' => $obj->{'localTime'},
+        );
+
+        // 检查是否有变化
+        if (has_changed($tagName, $currentData, $syncState)) {
+            // 如果有变化，构造 WordPress 内容并发送
+            $postContent = "<table border=1>";
+            $postContent .= "<tr><td>Tag Name</td><td>$tagName</td></tr>";
+            foreach ($currentData as $key => $value) {
+                $postContent .= "<tr><td>$key</td><td>$value</td></tr>";
+            }
+            $postContent .= "</table>";
+            send_to_wordpress("Tag Updated: $tagName", $postContent);
+
+            // 更新同步状态
+            $syncState[$tagName] = $currentData;
+        }
+
+        // 构造 HTML 表格
+        $content .= "<tr>";
+        $content .= "<td>$tagName</td>";
+        $content .= "<td>" . $currentData['Size'] . "</td>";
+        $content .= "<td>" . $currentData['Ver'] . "</td>";
+        $content .= "<td>" . $currentData['localIP'] . "</td>";
+        $content .= "<td>" . $currentData['Temp'] . "</td>";
+        $content .= "<td>" . $currentData['Pres'] . "</td>";
+        $content .= "<td>" . $currentData['Bright'] . "</td>";
+        $content .= "<td>" . $currentData['Clients'] . "</td>";
+        $content .= "<td>" . $currentData['Aps'] . "</td>";
+        $content .= "<td>" . strftime("%D %T", (int)$currentData['localTime']) . "</td>";
+        $content .= "</tr>";
     }
 }
-echo "</table>";
-echo "<input type=submit value=submit>";
+
+// 保存同步状态
+save_sync_state($syncState);
+
+$content .= "</table>";
+
+// 手动同步逻辑
+if (isset($_POST['sync_to_wp'])) {
+    // 将数据发送到 WordPress
+    $response = send_to_wordpress("Manual Sync: TinyWebDB Tags", $content);
+    echo "<p>Data synchronized to WordPress manually!</p>";
+}
+
+// HTML 输出
+echo "<h1>TinyWebDB API and Sniffing Log Compare</h1>";
+echo "<h2><a href=index.php>HOME</a>  <a href=tags.php>TAGS</a></h2>";
+
+// 手动同步按钮
+echo "<form method='POST' action=''>";
+echo "<button type='submit' name='sync_to_wp'>Sync to UPOD</button>";
 echo "</form>";
 
-$macdb = json_decode(file_get_contents("mac.db"));
-
-if (isset($_POST['macName'])) {
-    $mac = $_POST['macAddr'];
-    $macdb->{$mac} = $_POST['macName'];
-    $fh = fopen("mac.db", "w") or die("check file write permission.");
-    fwrite($fh, json_encode($macdb));
-    fclose($fh);
-} elseif (isset($_GET['mac'])) {
-    $mac = $_GET['mac'];
-    echo "<h3>MAC db form</h3>";
-    echo "<form method='POST' action=''>";
-    echo "<input type='hidden' name='macAddr' value=" . $mac . ">"; 
-    echo "<input type='text' name='macName' value='" . $macdb->{$mac} . "'>"; 
-    echo "<input type='submit' value='submit'>";
-    echo "</form>";
-    exit;
-}
-
-if (isset($_POST['tagList'])) {
-    $tagList = $_POST['tagList'];
-} elseif (isset($_GET['tag'])) {
-    $tagList[] = $_GET['tag'];
-}
-
-if (isset($tagList)) {
-    echo "<h3>TinyWebDB MAC List</h3>";
-    echo "<table border=1>";
-
-    echo "<tr>";
-    echo "<th> MAC <br> Last update </th>";
-    $max_clients = 0;
-    foreach($tagList as $tagName) {
-	$tagValue = file_get_contents($tagName . ".txt");
-    	$obj = json_decode($tagValue);
-	$clientArray[$tagName] = $obj->{'clientList'};
-	if ($max_clients < $obj->{'clients'}) {
-	    $max_clients = $obj->{'clients'};
-	    $pattern = "/" . substr($tagName, -6, 6) . "$/";
-    	    $clientList = $obj->{'clientList'};
-	}
-	$tim_stmp = $obj->{'localTime'} - 9*3600;
-	echo "<td> " . $tagName . "<br>" . strftime("%D %T", (int)$tim_stmp) . "</td>";
-    }
-    echo "</tr>\n";
-
-    // find max_clients WiFi senser mac & add to $clientList 
-    foreach($tagList as $tagName) {
-	$macs = preg_grep($pattern, array_keys((array)$clientArray[$tagName]));
-	if (!is_null(key($macs))) {
-	    $mac = $macs[key($macs)];
-	    $clientList->{$mac} = "";
-	}
-    }
-
-    $clients = (array)$clientList;
-    ksort($clients);
-    $colors = array("purple","green","orange","blue","yellow","pink","red","brown","gold","silver");
-    foreach ($clients as $mac => $rssi ) {
-	if ($rssi <= -80) continue;
-        echo "<tr> ";
-	$macs = preg_grep("/" . substr($mac, -6, 6) . "$/", $tagList);
-	if (!is_null(key($macs))) { echo "<td bgcolor=red>"; }
-	elseif(substr($mac, 0, 6) == "2c3ae8"){ echo "<td bgcolor=yellow>"; } 
-	else { echo "<td>"; }
-        echo "<a href=tags.php?mac=$mac>" . $mac . "</a>(";
-	if (array_key_exists($mac, $macdb)) echo $macdb->{$mac};
-	echo ")</td>";
-    	foreach($tagList as $tagName) {
-	    if (array_key_exists($mac, $clientArray[$tagName])) {
-		$rssi = $clientArray[$tagName]->{$mac};
-		$color = $colors[($rssi + 99) /10 ];
-                echo "<td bgcolor=$color>" . $rssi . "</td>";
-	    } else echo "<td></td>";
-	}
-        echo "</tr>\n";
-    }
-    echo "</table>";
-
-    exit;
-}
+echo $content;
+?>
