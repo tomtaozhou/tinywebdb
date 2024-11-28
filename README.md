@@ -2,7 +2,7 @@
 
 **Author:** Tao Zhou  
 **Contributors:** Tao Zhou  
-**Tags:** edge computing, data filtering, UPOD, IoT
+**Tags:** edge computing, data filtering, UPOD, IoT  
 **Stable tag:** 1.0  
 **Requires PHP:** 5.6  
 **License:** GPL3.0  
